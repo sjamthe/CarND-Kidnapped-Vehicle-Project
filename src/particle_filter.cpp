@@ -12,20 +12,61 @@
 
 #include "particle_filter.h"
 
+using namespace std;
+
 void ParticleFilter::init(double x, double y, double theta, double std[]) {
 	// TODO: Set the number of particles. Initialize all particles to first position (based on estimates of 
 	//   x, y, theta and their uncertainties from GPS) and all weights to 1. 
 	// Add random Gaussian noise to each particle.
 	// NOTE: Consult particle_filter.h for more information about this method (and others in this file).
+    // This line creates a normal (Gaussian) distribution for x
+    
+    num_particles = 75; //TODO: Decide how this number is selected.
+    default_random_engine gen;
+    normal_distribution<double> dist_x(x, std[0]);
+    normal_distribution<double> dist_y(y, std[1]);
+    normal_distribution<double> dist_theta(theta, std[2]);
+    
+    particles.resize(num_particles); //reserve memory for these
+    weights.resize(num_particles);
+    for (int i = 0; i < num_particles; ++i) {
+        particles[i].id = i;
+        particles[i].x = dist_x(gen);
+        particles[i].y = dist_y(gen);
+        particles[i].theta = dist_theta(gen);
+        particles[i].weight = 1/num_particles;
 
+    }
+    is_initialized = true;
 }
+
 
 void ParticleFilter::prediction(double delta_t, double std_pos[], double velocity, double yaw_rate) {
 	// TODO: Add measurements to each particle and add random Gaussian noise.
 	// NOTE: When adding noise you may find std::normal_distribution and std::default_random_engine useful.
 	//  http://en.cppreference.com/w/cpp/numeric/random/normal_distribution
 	//  http://www.cplusplus.com/reference/random/default_random_engine/
+    default_random_engine gen;
 
+    normal_distribution<double> dist_x(0, std_pos[0]);
+    normal_distribution<double> dist_y(0, std_pos[1]);
+    normal_distribution<double> dist_theta(0, std_pos[2]);
+    
+    for (int i = 0; i < num_particles; ++i) {
+        //Now update the values
+        if(fabs(yaw_rate) <= 0.001) {
+            particles[i].x += velocity*cos(particles[i].theta)*delta_t;
+            particles[i].y += velocity*sin(particles[i].theta)*delta_t;
+        } else {
+            double theta_next = particles[i].theta + yaw_rate * delta_t;
+            particles[i].x += velocity/yaw_rate * (sin(theta_next) - sin(particles[i].theta));
+            particles[i].y += velocity/yaw_rate * (cos(particles[i].theta) - cos(theta_next));
+            particles[i].theta += yaw_rate*delta_t;
+        }
+        particles[i].x += dist_x(gen);
+        particles[i].y += dist_y(gen);
+        particles[i].theta += dist_theta(gen);
+    }
 }
 
 void ParticleFilter::dataAssociation(std::vector<LandmarkObs> predicted, std::vector<LandmarkObs>& observations) {
@@ -49,13 +90,76 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
 	//   3.33. Note that you'll need to switch the minus sign in that equation to a plus to account 
 	//   for the fact that the map's y-axis actually points downwards.)
 	//   http://planning.cs.uiuc.edu/node99.html
+
+    double total_weight = 0;
+    double std_x = std_landmark[0];
+    double std_y = std_landmark[1];
+    
+    for (int i = 0; i < num_particles; ++i) {
+        double x = particles[i].x;
+        double y = particles[i].y;
+        double theta = particles[i].theta;
+        
+        double prob = 1.0; //Initialized to 1 so we can multipy to itself.
+        for (LandmarkObs observation : observations) {
+            //transform observation to map coordinates from vehicle coordinates
+            LandmarkObs obs;
+            obs.x = x + observation.x * cos(theta) - observation.y * sin(theta);
+            obs.y = y + observation.x * sin(theta) + observation.y * cos(theta);
+            obs.id = -1; //initialize to -1 so we can find if we found a match.
+            
+            //find out which landmark this obs may correspond to.
+            double min_dist = sensor_range; //set to max
+            Map::single_landmark_s map_lmark;
+            for (Map::single_landmark_s landmark : map_landmarks.landmark_list) {
+                double cur_dist = dist(obs.x, obs.y, landmark.x_f, landmark.y_f);
+                if (cur_dist <= min_dist) {
+                    obs.id = landmark.id_i;
+                    map_lmark = landmark; //store the landmark that matched
+                    min_dist = cur_dist;
+                    //cout << obs.id <<","<< min_dist << endl;
+                }
+            }
+            //calculate Multivariate-Gaussian Probability
+            if(obs.id != -1) {
+                double d_x2 = pow((obs.x - map_lmark.x_f), 2)/2*pow(std_x,2);
+                double d_y2 = pow((obs.y - map_lmark.y_f), 2)/2*pow(std_y,2);
+                
+                double temp_prob = (1/(2*M_PI*std_x*std_y)) * exp(-1*(d_x2 + d_y2));
+                prob *= temp_prob;
+                //cout << "found temp_prob " << d_x2 <<"," << d_y2 << endl;
+                //cout << "found temp_prob " << temp_prob << endl;
+            }
+        }
+        //cout << "found temp_prob " << prob << endl;
+        //store the unnormalized probability as weight for each particle
+        if(prob != 1.0) {
+            particles[i].weight = prob;
+            total_weight += prob;
+            //cout << "found new prob " << total_weight << endl;
+        } else {
+            particles[i].weight = 0; //we didn't find any landmark
+        }
+    }
+    //Now normalize all weights
+    for (int i = 0; i < num_particles; ++i) {
+        particles[i].weight = particles[i].weight / total_weight;
+        weights[i] = particles[i].weight;
+        //cout << "weights[i] = " << weights[i] << endl;
+    }
 }
 
 void ParticleFilter::resample() {
 	// TODO: Resample particles with replacement with probability proportional to their weight. 
 	// NOTE: You may find std::discrete_distribution helpful here.
 	//   http://en.cppreference.com/w/cpp/numeric/random/discrete_distribution
-
+    std::vector<Particle> particles_curr(particles);
+    std::default_random_engine gen;
+    std::discrete_distribution<std::size_t> dis(weights.begin(), weights.end());
+    
+    for (int i = 0; i < num_particles; ++i) {
+        particles[i] = particles_curr[dis(gen)];
+    }
 }
 
 void ParticleFilter::write(std::string filename) {
