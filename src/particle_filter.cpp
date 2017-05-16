@@ -94,6 +94,9 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
     double total_weight = 0;
     double std_x = std_landmark[0];
     double std_y = std_landmark[1];
+    double std_x2 = 2*pow(std_x,2);
+    double std_y2 = 2*pow(std_y,2);
+    double term_std_xy = (1/(2*M_PI*std_x*std_y)); //calculate outside for loop for speed
     
     for (int i = 0; i < num_particles; ++i) {
         double x = particles[i].x;
@@ -101,31 +104,36 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
         double theta = particles[i].theta;
         
         double prob = 1.0; //Initialized to 1 so we can multipy to itself.
-        for (LandmarkObs observation : observations) {
-            //transform observation to map coordinates from vehicle coordinates
-            LandmarkObs obs;
-            obs.x = x + observation.x * cos(theta) - observation.y * sin(theta);
-            obs.y = y + observation.x * sin(theta) + observation.y * cos(theta);
-            obs.id = -1; //initialize to -1 so we can find if we found a match.
+        //Find map landmarks that are with-in sensor_range so they can be detected
+        //only for those landmrks look which observations are matching
+        Map::single_landmark_s map_lmark;
+        for (Map::single_landmark_s landmark : map_landmarks.landmark_list) {
+            if(dist(x, y, landmark.x_f, landmark.y_f) > sensor_range) {
+                continue;
+            }
+            double min_dist = numeric_limits<double>::max(); //set to max
+            LandmarkObs matched_obs;
+            matched_obs.id = -1;
+            for (LandmarkObs observation : observations) {
+                //transform observation to map coordinates from vehicle coordinates
+                LandmarkObs obs;
+                obs.x = x + observation.x * cos(theta) - observation.y * sin(theta);
+                obs.y = y + observation.x * sin(theta) + observation.y * cos(theta);
             
-            //find out which landmark this obs may correspond to.
-            double min_dist = sensor_range; //set to max
-            Map::single_landmark_s map_lmark;
-            for (Map::single_landmark_s landmark : map_landmarks.landmark_list) {
+                //find out closet observation to this landmark.
                 double cur_dist = dist(obs.x, obs.y, landmark.x_f, landmark.y_f);
                 if (cur_dist <= min_dist) {
-                    obs.id = landmark.id_i;
-                    map_lmark = landmark; //store the landmark that matched
+                    matched_obs = obs; //store the matched observation
+                    matched_obs.id = landmark.id_i;
                     min_dist = cur_dist;
-                    //cout << obs.id <<","<< min_dist << endl;
                 }
             }
             //calculate Multivariate-Gaussian Probability
-            if(obs.id != -1) {
-                double d_x2 = pow((obs.x - map_lmark.x_f), 2)/2*pow(std_x,2);
-                double d_y2 = pow((obs.y - map_lmark.y_f), 2)/2*pow(std_y,2);
+            if(matched_obs.id != -1) {
+                double d_x2 = pow((matched_obs.x - landmark.x_f), 2)/std_x2; //took stdx_2 calc outside of for loop to speed up.
+                double d_y2 = pow((matched_obs.y - landmark.y_f), 2)/std_y2;
                 
-                double temp_prob = (1/(2*M_PI*std_x*std_y)) * exp(-1*(d_x2 + d_y2));
+                double temp_prob = term_std_xy * exp(-1*(d_x2 + d_y2));
                 prob *= temp_prob;
                 //cout << "found temp_prob " << d_x2 <<"," << d_y2 << endl;
                 //cout << "found temp_prob " << temp_prob << endl;
@@ -147,6 +155,7 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
         weights[i] = particles[i].weight;
         //cout << "weights[i] = " << weights[i] << endl;
     }
+     
 }
 
 void ParticleFilter::resample() {
